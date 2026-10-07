@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FunBall — 球球遊樂場</title>
+<style>
+*{box-sizing:border-box}body{margin:0;overflow:hidden;background:#f7f3ec;color:#263a36;font-family:system-ui,sans-serif}canvas{display:block;touch-action:none}header{position:absolute;top:32px;left:32px;pointer-events:none;user-select:none}.tag{font-size:12px;letter-spacing:4px;color:#758780}h1{margin:10px 0;font-size:clamp(32px,6vw,64px);letter-spacing:-2px}p{font-size:14px;color:#758780}footer{position:absolute;bottom:24px;width:100%;display:flex;justify-content:center;gap:10px;pointer-events:none}button{pointer-events:auto;border:1px solid #263a3618;border-radius:24px;padding:13px 22px;background:#ffffffed;color:#263a36;font:inherit;cursor:pointer;box-shadow:0 4px 20px #263a3608}button:hover{background:#e4eddf}button:focus-visible{outline:3px solid #77a693}
+</style>
+<style>
+header{top:22px;left:24px}h1{font-size:clamp(28px,4vw,48px);margin:5px 0}header p{max-width:540px;margin:6px 0;line-height:1.6}.scoreboard{position:absolute;right:24px;top:24px;padding:14px 22px;background:#ffffffdd;border:1px solid #263a3610;border-radius:20px;pointer-events:none;text-align:right}.scoreboard small{color:#758780;font-size:12px}.scoreboard strong{display:block;font-size:32px;font-variant-numeric:tabular-nums}#combo{color:#dc7655;font-size:13px;min-height:20px}@media(max-width:600px){header{left:16px;top:16px}header .tag{font-size:9px;letter-spacing:2px}header p{max-width:230px;font-size:11px}.scoreboard{top:16px;right:12px;padding:10px 12px}.scoreboard strong{font-size:24px}footer{bottom:14px}button{padding:11px 17px}}
+</style>
+<style>
+header p,.tag,.scoreboard small{color:#465b53}#combo{color:#994422}
+header p{background:#f7f3eced;border-radius:8px;padding:3px 6px;margin-left:-6px}
+@media(max-width:600px){header p{max-width:calc(100vw - 155px);font-size:12px}header h1{font-size:26px}}
+</style>
+<style>
+canvas{cursor:crosshair}#shot-help{position:absolute;bottom:82px;left:50%;transform:translateX(-50%);width:max-content;max-width:92vw;text-align:center;background:#ffffffed;border:1px solid #465b53;border-radius:14px;padding:9px 16px;color:#263a36;pointer-events:none;font-size:13px}#power{display:block;width:100%;height:8px;margin-top:7px;accent-color:#263a36}footer{gap:6px}footer button{padding:12px 16px}@media(max-width:600px){footer button{font-size:12px;padding:11px 12px}#shot-help{bottom:70px;font-size:12px}}
+</style>
+<style>#power[hidden]{display:none}</style>
+<header><div class="tag">A LITTLE PLAY, EVERY DAY</div><h1>球球遊樂場<span style="color:#ed865b">.</span></h1><p>同圖形進洞 +100 分 · 三顆同圖形相連就爆破！<br>3 秒內再次爆破可疊加連鎖。<br>拉桿瞄準時暫停場地，按 Esc 取消。</p></header>
+<aside class="scoreboard"><small>遊戲分數</small><strong id="score">0</strong><div id="combo">來一場連鎖反應</div></aside>
+<canvas aria-label="點住球往後拖曳，放開向反方向擊球，拉得越遠力道越大。球與球洞以相同圖形配對；三顆同圖形相連即可爆破。"></canvas>
+<div id="shot-help"><span id="shot-label">點住一顆球 → 往後拉 → 放開擊球</span><progress id="power" max="100" value="0" aria-label="擊球力道" hidden></progress></div>
+<footer><button id="mode" aria-pressed="true">球桿模式 · 切換推球</button><button id="shuffle">↗ 全部動起來</button><button id="reset">↻ 重新開始</button></footer>
+<script>
+'use strict';
+const canvas=document.querySelector('canvas'),ctx=canvas.getContext('2d');
+const colors=['#ee856d','#e8bd53','#83b5a1','#81aeda'];
+// Shared, upright vector badges identify each type without relying on color.
+function drawBadge(color,x,y,r){
+ const type=colors.indexOf(color),s=r*.49;
+ ctx.save();ctx.translate(x,y);
+ ctx.fillStyle='#ffffff';ctx.strokeStyle='#172a25';ctx.lineWidth=1.5;
+ ctx.beginPath();ctx.arc(0,0,r,0,Math.PI*2);ctx.fill();ctx.stroke();
+ ctx.fillStyle='#172a25';ctx.beginPath();
+ if(type===0)ctx.arc(0,0,s,0,Math.PI*2);
+ else if(type===1){ctx.moveTo(0,-s*1.2);ctx.lineTo(s*1.12,s*.9);ctx.lineTo(-s*1.12,s*.9);ctx.closePath();}
+ else if(type===2)ctx.rect(-s,-s,s*2,s*2);
+ else {ctx.rect(-s*.36,-s*1.2,s*.72,s*2.4);ctx.rect(-s*1.2,-s*.36,s*2.4,s*.72);}
+ ctx.fill();ctx.restore();
+}
+const pointer={x:0,y:0,vx:0,vy:0,active:false};
+let cueMode=true,aim=null;
+const maxPull=150,deadZone=5;
+const shotLabel=document.querySelector('#shot-label'),powerNode=document.querySelector('#power'),modeNode=document.querySelector('#mode');
+function shotVector(){
+ const dx=aim.startX-aim.x,dy=aim.startY-aim.y,d=Math.hypot(dx,dy);
+ return {nx:d?dx/d:1,ny:d?dy/d:0,power:Math.min(1,Math.max(0,(d-deadZone)/(maxPull-deadZone)))};
+}
+function showPower(){
+ const percent=aim?Math.round(shotVector().power*100):0;
+ powerNode.hidden=!aim;powerNode.value=percent;
+ shotLabel.textContent=aim?'力道 '+percent+'% · 放開擊球 / Esc 取消':cueMode?'點住一顆球 → 往後拉 → 放開擊球':'滑鼠滑過或手指滑動，就能推球';
+}
+function cancelAim(){
+ const id=aim?.id;aim=null;
+ if(id!==undefined&&canvas.hasPointerCapture(id))canvas.releasePointerCapture(id);
+ release();showPower();
+}
+function startAim(e){
+ if(!cueMode){move(e);return;}
+ if(aim||e.button!==0)return;
+ const b=[...balls].reverse().find(b=>Math.hypot(e.clientX-b.x,e.clientY-b.y)<=b.r+3);
+ if(!b)return;
+ aim={ball:b,id:e.pointerId,startX:e.clientX,startY:e.clientY,x:e.clientX,y:e.clientY};
+ release();canvas.setPointerCapture(e.pointerId);showPower();
+}
+function shoot(e){
+ if(!aim||e.pointerId!==aim.id)return;
+ aim.x=e.clientX;aim.y=e.clientY;
+ const {nx,ny,power}=shotVector(),b=aim.ball;
+ if(power>0&&balls.includes(b)){b.vx=nx*power*70;b.vy=ny*power*70;}
+ cancelAim();
+}
+let width,height,balls=[],previous=0,accumulator=0;
+let holes=[],effects=[],score=0,chain=0,chainTime=0,refills=[],targetCount=0;
+const scoreNode=document.querySelector('#score'),comboNode=document.querySelector('#combo');
+function layoutHoles(){
+ const r=Math.min(38,width*.075,height*.065);
+ const top=height*.42,bottom=height*.64;
+ const inset=Math.max(r+15,width*.35);
+ holes=colors.map((color,i)=>({color,r,x:i%2?width-inset:inset,y:i<2?top:bottom}));
+}
+function makeBall(index){
+ const r=Math.min(19+Math.random()*9,width/18,height/20);
+ let x,y;
+ for(let tries=0;tries<150;tries++){
+  x=r+Math.random()*(width-2*r);y=Math.min(160,height*.3)+Math.random()*Math.max(1,height-Math.min(160,height*.3)-85-r);
+  if(holes.every(h=>Math.hypot(x-h.x,y-h.y)>h.r+r+15)&&balls.every(b=>Math.hypot(x-b.x,y-b.y)>r+b.r+8))break;
+ }
+ return {x,y,r,vx:0,vy:0,angle:Math.random()*Math.PI*2,color:colors[index%colors.length],grace:60};
+}
+function burst(x,y,color,label){
+ effects.push({x,y,color,label,life:60,max:60,ring:true});
+ for(let i=0;i<14;i++){const a=Math.random()*Math.PI*2,s=1+Math.random()*4;effects.push({x,y,color,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:35,max:35});}
+}
+function updateScore(){scoreNode.textContent=score.toLocaleString();comboNode.textContent=chainTime>0?'連鎖 ×'+chain+' · '+(chainTime/60).toFixed(1)+' 秒':'來一場連鎖反應';}
+function resolveMatches(){
+ const removed=new Set();
+ for(const b of balls){
+  if(b.grace>0)continue;
+  const hole=holes.find(h=>h.color===b.color&&Math.hypot(b.x-h.x,b.y-h.y)<h.r-b.r*.25);
+  if(hole){removed.add(b);score+=100;burst(hole.x,hole.y,b.color,'進洞 +100');}
+ }
+ const seen=new Set(),groups=[];
+ for(const b of balls){
+  if(removed.has(b)||seen.has(b)||b.grace>0)continue;
+  const group=[b];seen.add(b);
+  for(let i=0;i<group.length;i++)for(const other of balls){
+   if(seen.has(other)||removed.has(other)||other.grace>0||other.color!==b.color)continue;
+   if(Math.hypot(group[i].x-other.x,group[i].y-other.y)<=group[i].r+other.r+3){seen.add(other);group.push(other);}
+  }
+  if(group.length>=3)groups.push(group);
+ }
+ if(groups.length){
+  chain=chainTime>0?chain+1:1;chainTime=180;
+  for(const group of groups){
+   const x=group.reduce((s,b)=>s+b.x,0)/group.length,y=group.reduce((s,b)=>s+b.y,0)/group.length;
+   const points=group.length*50*chain;score+=points;
+   for(const b of group)removed.add(b);
+   burst(x,y,group[0].color,chain>1?'連鎖 ×'+chain+' +'+points:group.length+' 球爆破 +'+points);
+   for(const b of balls){const dx=b.x-x,dy=b.y-y,d=Math.hypot(dx,dy);if(d>0&&d<190){const force=(1-d/190)*10;b.vx+=dx/d*force;b.vy+=dy/d*force;}}
+  }
+ }
+ if(removed.size){balls=balls.filter(b=>!removed.has(b));for(const b of removed)refills.push({time:55,color:colors.indexOf(b.color)});}
+}
+function resize(){
+ cancelAim();
+ width=innerWidth;height=innerHeight;
+ const dpr=Math.min(devicePixelRatio||1,2);
+ canvas.width=Math.round(width*dpr);canvas.height=Math.round(height*dpr);
+ canvas.style.width=width+'px';canvas.style.height=height+'px';ctx.setTransform(dpr,0,0,dpr,0,0);
+ layoutHoles();
+ for(const b of balls){b.r=Math.min(b.r,width/4,height/4);b.x=Math.max(b.r,Math.min(width-b.r,b.x));b.y=Math.max(b.r,Math.min(height-b.r,b.y));}
+}
+function reset(){
+ cancelAim();
+ balls=[];effects=[];refills=[];score=0;chain=0;chainTime=0;release();
+ targetCount=3*Math.min(48,Math.max(16,Math.floor(width*height/19000)));
+ for(let i=0;i<targetCount;i++)balls.push(makeBall(i));updateScore();
+}
+function move(e){
+ if(aim){if(e.pointerId===aim.id){aim.x=e.clientX;aim.y=e.clientY;showPower();}return;}
+ if(cueMode)return;
+ pointer.vx=pointer.active?Math.max(-20,Math.min(20,e.clientX-pointer.x)):0;
+ pointer.vy=pointer.active?Math.max(-20,Math.min(20,e.clientY-pointer.y)):0;
+ pointer.x=e.clientX;pointer.y=e.clientY;pointer.active=true;
+}
+function release(){pointer.active=false;pointer.vx=pointer.vy=0;}
+canvas.addEventListener('pointermove',move);canvas.addEventListener('pointerdown',startAim);
+canvas.addEventListener('pointerleave',release);
+canvas.addEventListener('pointercancel',e=>{if(aim?.id===e.pointerId)cancelAim();else release();});
+canvas.addEventListener('lostpointercapture',e=>{if(aim?.id===e.pointerId)cancelAim();});
+canvas.addEventListener('pointerup',e=>{shoot(e);if(e.pointerType!=='mouse')release();});
+window.addEventListener('blur',cancelAim);
+window.addEventListener('keydown',e=>{if(e.key==='Escape')cancelAim();});
+document.addEventListener('visibilitychange',()=>{if(document.hidden)cancelAim();});
+modeNode.onclick=()=>{cancelAim();cueMode=!cueMode;modeNode.textContent=cueMode?'球桿模式 · 切換推球':'推球模式 · 切換球桿';modeNode.setAttribute('aria-pressed',String(cueMode));canvas.style.cursor=cueMode?'crosshair':'default';showPower();};
+function step(){
+ if(aim)return;
+ if(chainTime>0)chainTime--;
+ for(const refill of refills)refill.time--;
+ for(const refill of refills.filter(r=>r.time<=0))balls.push(makeBall(refill.color));
+ refills=refills.filter(r=>r.time>0);
+ for(const e of effects){e.life--;if(!e.ring){e.x+=e.vx;e.y+=e.vy;e.vy+=.035;}}
+ effects=effects.filter(e=>e.life>0);
+ for(const b of balls){
+  if(b.grace>0)b.grace--;
+  if(pointer.active){
+   const dx=b.x-pointer.x,dy=b.y-pointer.y,d=Math.hypot(dx,dy),reach=b.r+35;
+   if(d<reach){const f=(1-d/reach)*1.7;b.vx+=(d?dx/d:1)*f+pointer.vx*.025;b.vy+=(d?dy/d:0)*f+pointer.vy*.025;}
+  }
+  b.vx*=.987;b.vy*=.987;
+  const speed=Math.hypot(b.vx,b.vy);if(speed>70){b.vx*=70/speed;b.vy*=70/speed;}
+  b.x+=b.vx;b.y+=b.vy;b.angle+=(b.vx+b.vy*.35)/b.r;
+ }
+ pointer.vx*=.7;pointer.vy*=.7;
+ resolveMatches();updateScore();
+ for(let i=0;i<balls.length;i++)for(let j=i+1;j<balls.length;j++){
+  const a=balls[i],b=balls[j],dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy);
+  if(d>=a.r+b.r)continue;
+  const nx=d?dx/d:1,ny=d?dy/d:0,overlap=a.r+b.r-d,ia=1/(a.r*a.r),ib=1/(b.r*b.r);
+  a.x-=nx*overlap*ia/(ia+ib);a.y-=ny*overlap*ia/(ia+ib);b.x+=nx*overlap*ib/(ia+ib);b.y+=ny*overlap*ib/(ia+ib);
+  const relative=(b.vx-a.vx)*nx+(b.vy-a.vy)*ny;
+  if(relative<0){const impulse=-1.9*relative/(ia+ib);a.vx-=impulse*ia*nx;a.vy-=impulse*ia*ny;b.vx+=impulse*ib*nx;b.vy+=impulse*ib*ny;}
+ }
+ for(const b of balls){
+  if(b.x<b.r){b.x=b.r;b.vx=Math.abs(b.vx)*.9;}if(b.x>width-b.r){b.x=width-b.r;b.vx=-Math.abs(b.vx)*.9;}
+  if(b.y<b.r){b.y=b.r;b.vy=Math.abs(b.vy)*.9;}if(b.y>height-b.r){b.y=height-b.r;b.vy=-Math.abs(b.vy)*.9;}
+ }
+}
+function drawCue(){
+ if(!aim)return;
+ const b=aim.ball,{nx,ny,power}=shotVector(),angle=Math.atan2(ny,nx),length=70+power*160;
+ ctx.save();ctx.translate(b.x,b.y);
+ ctx.strokeStyle='#ffffff';ctx.lineWidth=6;ctx.beginPath();ctx.arc(0,0,b.r+5,0,Math.PI*2);ctx.stroke();
+ ctx.strokeStyle='#172a25';ctx.lineWidth=2;ctx.stroke();ctx.rotate(angle);
+ // Direction preview only; collisions and rebounds determine the actual path.
+ ctx.setLineDash([7,6]);ctx.lineWidth=4;ctx.strokeStyle='#ffffff';ctx.beginPath();ctx.moveTo(b.r+8,0);ctx.lineTo(b.r+length,0);ctx.stroke();
+ ctx.lineWidth=2;ctx.strokeStyle='#172a25';ctx.stroke();ctx.setLineDash([]);
+ ctx.fillStyle='#172a25';ctx.beginPath();ctx.moveTo(b.r+length+9,0);ctx.lineTo(b.r+length-4,-6);ctx.lineTo(b.r+length-4,6);ctx.closePath();ctx.fill();
+ const tip=-b.r-10-power*55;
+ ctx.strokeStyle='#172a25';ctx.lineWidth=10;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(tip-100,0);ctx.lineTo(tip,0);ctx.stroke();
+ ctx.strokeStyle='#dfb779';ctx.lineWidth=6;ctx.stroke();ctx.strokeStyle='#ffffff';ctx.beginPath();ctx.moveTo(tip-6,0);ctx.lineTo(tip,0);ctx.stroke();
+ ctx.restore();
+}
+function draw(time){
+ accumulator+=Math.min(time-(previous||time),50);previous=time;
+ while(accumulator>=1000/60){step();accumulator-=1000/60;}
+ ctx.clearRect(0,0,width,height);ctx.fillStyle='#263a3610';
+ for(let x=20;x<width;x+=32)for(let y=20;y<height;y+=32)ctx.fillRect(x,y,1.5,1.5);
+ for(const h of holes){
+  ctx.save();ctx.translate(h.x,h.y);ctx.fillStyle=h.color+'25';ctx.beginPath();ctx.arc(0,0,h.r+9,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#293b3a';ctx.strokeStyle=h.color;ctx.lineWidth=6;ctx.beginPath();ctx.arc(0,0,h.r,0,Math.PI*2);ctx.fill();ctx.stroke();
+  drawBadge(h.color,0,-h.r*.16,h.r*.48);
+  ctx.fillStyle='#ffffff';ctx.font='bold 12px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('+100',0,h.r*.63);ctx.restore();
+ }
+ for(const b of balls){
+  ctx.save();ctx.translate(b.x,b.y);ctx.shadowColor='#34483925';ctx.shadowBlur=14;ctx.shadowOffsetY=7;
+  ctx.fillStyle=b.color;ctx.beginPath();ctx.arc(0,0,b.r,0,Math.PI*2);ctx.fill();ctx.shadowColor='transparent';
+  const light=ctx.createRadialGradient(-b.r*.35,-b.r*.4,0,0,0,b.r);
+  light.addColorStop(0,'#ffffff75');light.addColorStop(.65,'#ffffff00');light.addColorStop(1,'#00000015');ctx.fillStyle=light;ctx.fill();
+  ctx.rotate(b.angle);ctx.strokeStyle='#ffffff65';ctx.lineWidth=2;ctx.beginPath();ctx.ellipse(0,0,b.r*.43,b.r*.87,.35,0,Math.PI*2);ctx.stroke();ctx.restore();
+  drawBadge(b.color,b.x,b.y,b.r*.57);
+ }
+ for(const e of effects){
+  ctx.save();ctx.globalAlpha=e.life/e.max;ctx.fillStyle=e.color;ctx.strokeStyle=e.color;
+  if(e.ring){ctx.lineWidth=3;ctx.beginPath();ctx.arc(e.x,e.y,15+(1-e.life/e.max)*90,0,Math.PI*2);ctx.stroke();ctx.font='bold 18px system-ui';ctx.textAlign='center';ctx.fillStyle='#263a36';ctx.fillText(e.label,Math.max(85,Math.min(width-85,e.x)),e.y-35-(1-e.life/e.max)*35);}
+  else{ctx.beginPath();ctx.arc(e.x,e.y,3,0,Math.PI*2);ctx.fill();}ctx.restore();
+ }
+ drawCue();requestAnimationFrame(draw);
+}
+document.querySelector('#shuffle').onclick=()=>{cancelAim();balls.forEach(b=>{const angle=Math.random()*Math.PI*2;b.vx=Math.cos(angle)*12;b.vy=Math.sin(angle)*12;});};
+document.querySelector('#reset').onclick=reset;window.addEventListener('resize',resize);
+resize();reset();requestAnimationFrame(draw);
+</script>
+</html>
